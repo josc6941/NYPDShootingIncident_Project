@@ -1,0 +1,319 @@
+---
+title: "NYPD_Shooting_Data - 'Where and When' Analysis"
+author: "Joe Schoen"
+date: "2026-02-09"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE, echo=TRUE}
+library(tidyverse)
+library(lubridate)
+library(readr)
+library(kableExtra)
+library(leaflet)
+library(leaflet.extras)
+library(ggExtra)
+library(nasapower)
+```
+
+# <b>Introduction</b>
+
+This is an analysis of the NYPD Shooting Incident dataset. The data used in this analysis was originally downloaded from the City of New York's website, <https://data.cityofnewyork.us/api/views/833y-fsy8/rows.csv?accessType=DOWNLOAD>, however during the duration of this course the data set was made private.  Fortunately, I had the data saved locally and uploaded it to my GitHub account, making the data for this analysis available here: <https://raw.githubusercontent.com/josc6941/NYPDShootingIncident_Project/main/NYPD_Shooting_Incident_Data__Historic_.csv>
+
+The goal of this analysis is to identify any trends in the time and place of shooting incidents in New York City with the goal of better informing policy and police efforts to reduce such incidents.
+
+```{r import, echo = TRUE, message = FALSE}
+# Define web address of the data
+url <- "https://raw.githubusercontent.com/josc6941/NYPDShootingIncident_Project/main/NYPD_Shooting_Incident_Data__Historic_.csv"
+# Import the data and name it 'nypd_data'
+nypd_data <- read_csv(url)
+summary(nypd_data)
+```
+
+## Summary
+
+The data set contains information for each shooting incident in New York City from 2006 through the end of 2024. Each row represents an individual shooting incident and contains details including date and time, location,  and demographic information for the victim and perpetrator, if it is available.  Each row also contains information which, for the purpose of this analysis, is extraneous such as Jurisdiction Code, and Statistical Murder Flag, among others, which I filtered from the data set prior to analysis.
+
+```{r cleaning, echo=TRUE}
+# Converting to character ensures R treats each ID as a unique text string
+nypd_data$INCIDENT_KEY <- as.character(nypd_data$INCIDENT_KEY)
+
+nypd_data_clean <- nypd_data %>%
+# 1. Update the select statement to include INCIDENT_KEY
+  select(INCIDENT_KEY, OCCUR_DATE, OCCUR_TIME, BORO, PRECINCT, 
+         Latitude, Longitude, X_COORD_CD, Y_COORD_CD)
+
+# 2. Filter for unique incidents ONLY
+nypd_data_clean <- nypd_data_clean %>%
+  distinct(INCIDENT_KEY, .keep_all = TRUE)
+
+# 3. Final transformations
+nypd_data_clean <- nypd_data_clean %>%
+  mutate(
+    OCCUR_DATE = mdy(OCCUR_DATE),
+    BORO = as.factor(BORO),
+    PRECINCT = as.factor(PRECINCT)
+  )
+
+# 4. View the new summary to see the reduction in observations
+summary(nypd_data_clean)
+```
+```{r summarypt2, echo=TRUE}
+summary(nypd_data_clean)
+```
+In order to clean the data, first I filtered by INCIDENT_KEY.  I did this because each row in the data set represents a victim as opposed to a unique incident, which means 1 incident with 3 victims would result in 3 rows being added to the data set.  Since I am focused on each the "when and where" of each incident, this would cause me to over count and would skew my data.  By filtering, I am left with the 23,298 unique shooting incidents in the data set.
+
+As seen above in the summary, there are 78 incidents that are missing Longitude and Latitude information but have values for X_COORD_CD and Y_COORD_CD.  Given that the original data set contained nearly 30,000 incidents, and this filtered one contains over 23,000, these 78 do not represent a statistically significant portion of the data, so I am choosing to remove them from the analysis at this point.  To further simplify the table, I will also remove the X_COORD_CD and Y_COORD_CD columns.
+
+If I chose to include them, however, I could work to find the correlation between the two sets of geographic data, X_COORD_CD/Y_COORD_CD and Longitude/Latitude, to calculate the appropriate values for those 78 incidents.
+
+```{r cleaning_pt2, echo=TRUE}
+nypd_data_clean_pt2 <- nypd_data_clean %>%
+  # Eliminating extraneous information
+  select(BORO, PRECINCT,
+         Latitude, Longitude) %>%
+  filter(!is.na(Latitude))
+```
+```{r summary, echo=TRUE}
+summary(nypd_data_clean_pt2)
+```
+## <b>Visualizations and Analysis</b>
+
+### The 'Where'
+After looking at the data, there is a clear trend displayed in the BORO data, with 16,104 of the 23,298 total incidents occurring in the Bronx and Brooklyn.  I am curious to see if the PRECINCT data can provide us a more precise view of incident trends.  Often times there are sections of cities that have a higher rate of crime, and if that is the case in New York, having that information would assist efforts to reduce the number of shooting incidents.
+
+#### Total Number of Incidents vs Percentage of Total Incidents
+Given the total number of incidents in a precinct lacks context (500 incidents sounds like a lot on it's own, but if another precinct has 1500 it looks smaller in comparison), I will be looking at the percentage of all incidents that occur in each precinct.
+
+```{r precinct, echo = TRUE}
+precinct_summary <- nypd_data_clean_pt2 %>%
+  
+  # Grouping by both in order to retain PRECINCT and BORO in the data set)
+  group_by(PRECINCT, BORO) %>%
+  
+  # Creates a total incident count for each precinct and ungroups
+  summarize(incident_count = n(), .groups = "drop") %>% 
+  
+  # Creates a column with the percentage of the overall total number of incidents associated with each precinct
+  mutate(percentage = round((incident_count / sum(incident_count)) * 100, 2)) %>%
+  
+  # Arranges incidents by incident counts in descending order
+  arrange(desc(incident_count))
+```
+```{r precinct_summary, echo=TRUE}
+precinct_summary %>%
+  slice(1:10) %>% 
+  kbl(col.names = c("Precinct", "Boro", "Incidents", "Percentage of Total")) %>%
+  footnote(general = "Table 1: Percentage of Total Shooting Incidents by Precinct", general_title = "")
+```
+
+\
+As we can see in the table above, 3 precincts account for 15.75% of all shooting incidents across the 77 total precincts since 2006, and 10 account for 39.42%.  This shows there is a significantly higher number of shootings in these areas.
+
+#### Proximity of Top 10 Precincts
+This raises a follow up question: are these boroughs close in proximity, or even adjacent to each other?  If so, it is possible that while focusing on individual boroughs is too broad, focusing on individual precincts could be too narrow of a view.  To analyze that, I am going to use leaflet and the Latitude and Longitude data to create a geographic representation of the shooting incident hot spots.
+
+```{r proximity, echo = TRUE}
+# Defining Colors of Heat Map Gradient
+heat_colors <- c("purple", "blue", "cyan", "green", "yellow", "orange", "red")
+
+# Create the Map
+leaflet(nypd_data_clean_pt2) %>%
+  addTiles() %>%
+  addHeatmap(
+    lng = ~Longitude,
+    lat = ~Latitude,
+    intensity = 1,
+    max = 0.9,
+    radius = 9,
+    blur = 15,
+    gradient = heat_colors
+  ) %>%
+  addControl(
+    html = "<b>NYPD Shooting Incident Heat Map</b>", 
+    position = "topright"
+  )
+``` 
+
+The map above shows that the precincts with the 10 highest shares of shooting incidents are close in proximity, and in several cases adjacent to each other.  It also shows they are a part of two larger concentrations of shooting incidents that make up the majority of the total incidents in the city.
+
+#### Analysis
+
+As shown in the representation above, the 10 precincts identified to have the highest percentages of shooting incidents are in close proximity, and in many cases are adjacent to each other.  The proximity raises further questions:
+
+- What characteristics do these precincts share beyond location?
+- What characteristics are different from the precincts with the lowest percentages of the incidents?
+- Are these numbers associated with each precinct skewed at all by the varying sizes of individual precincts?
+- Why are some incidents attributed to these precincts despite their coordinates placing them elsewhere?
+
+There are many more questions that arise from the results of these two visualizations but these are the ones I would look to pursue next.
+
+### The 'When'
+
+#### Time of Day and Year
+Going back to the original clean data, I now want to take a look at the "when" aspect of the shooting incidents.  Understanding where they occur most frequently narrows down where efforts are most needed, but knowing when is equally important in making efforts efficient and effective.
+
+Below are two graphs representing the time of day and the time of year compared to the percentage of total shooting incidents occurring at those times.
+
+```{r when, echo = TRUE, message=FALSE}
+nypd_data_clean
+# Isolating month and hour data
+time_trend_data <- nypd_data_clean %>%
+  mutate(
+    month = month(OCCUR_DATE, label = TRUE),
+    hour = hour(hms(OCCUR_TIME))
+  )
+
+# Calculating hourly and monthly percentages
+hourly_trend <- time_trend_data %>%
+  count(hour) %>%
+  mutate(percentage = round((n / sum(n)) * 100, 2))
+
+monthly_trend <- time_trend_data %>%
+  count(month) %>%
+  mutate(percentage = round((n / sum(n)) * 100, 2))
+
+hourly_trend
+monthly_trend
+
+# Creating chart of hourly_trend
+ggplot(hourly_trend, aes(x = hour, y = percentage)) +
+  geom_line(color = "red") +
+  geom_point() +
+  scale_x_continuous(breaks = 0:23) +
+  labs(title = "Percent of Shootings by Hour of Day", 
+       x = "Hour (24h Clock)", y = "Percentage of Total") +
+  theme_minimal()
+
+# Creating chart of monthly_trend
+ggplot(monthly_trend, aes(x = month, y = percentage, group = 1)) +
+  geom_line(color = "red") +
+  geom_point() +
+  labs(title = "Percent of Shootings by Month", 
+       x = "Month", y = "Percentage of Total") +
+  theme_minimal()
+```
+
+As shown in the graphs above, the 5 hours between 9 PM and 1 AM all have 7% or greater of the total number of shooting incidents, totaling a combined 38.63%.  Overall, the 11 hours between 6 PM and 4 AM all have percentages over the mean of 4.17% (100% / 24 hours $\approx 4.17\%$), accounting for 72.19% of all incidents. 
+
+The monthly graph shows that each month in the 6 month span from May to October has a percentage above the mean of 8.33% (100% / 12 $\approx 8.33\%$) and together account for 60.18% of all incidents.  However, the traditional summer months of June, July, and August all have percentages above 10%, and together account for 33.24% of all incidents.
+
+This raises the question, why do incidents increase in frequency during the summer?  Given that the hourly trends show more incidents at night, it is reasonable to expect incidents to decrease in frequency during the summer when there is more daylight and nights are shorter in New York.  Summer months also mean warmer weather, and the monthly graph does show a trend resembling seasonal temperatures, so could change in temperature be a factor?
+
+
+``` {r weather, echo = TRUE}
+# 1) Download weather data
+nyc_weather_raw <- get_power(
+  community = "ag",
+  lonlat = c(-73.9653, 40.7822),
+  pars = c("T2M_MAX", "T2M_MIN", "T2M"), 
+  dates = c("2006-01-01", "2024-12-31"),
+  temporal_api = "daily"
+)
+
+# 2) Calculate daily totals for each date in data set
+nypd_daily_totals <- nypd_data_clean %>%
+  mutate(OCCUR_DATE = as.Date(OCCUR_DATE)) %>%
+  group_by(OCCUR_DATE) %>%
+  summarize(Total_Incidents = n(), .groups = 'drop')
+
+# 3) Merge weather data for every day in data range, 01/01/2006 to 12/31/2024
+# Including days without incidents
+nyc_master_data <- nyc_weather_raw %>%
+  mutate(
+    Date = as.Date(YYYYMMDD),
+    High_Temp_F = (T2M_MAX * 9/5) + 32,
+    # Rounding temperatures to nearest full degree to increase the clarity of the plot
+    High_Temp_Rounded = round(High_Temp_F)
+  ) %>%
+  select(Date, High_Temp_Rounded) %>%
+  left_join(nypd_daily_totals, by = c("Date" = "OCCUR_DATE")) %>%
+  mutate(Total_Incidents = ifelse(is.na(Total_Incidents), 0, Total_Incidents))
+
+# 4) Calculate incident rate per day at each temperature
+nyc_rate_data <- nyc_master_data %>%
+  group_by(High_Temp_Rounded) %>%
+  summarize(
+    Total_Days = n(),
+    Total_Incidents_Sum = sum(Total_Incidents),
+    Incidents_Per_Day = Total_Incidents_Sum / Total_Days,
+    .groups = 'drop'
+  )
+
+# 5) GLM model
+fit_model <- glm(Incidents_Per_Day ~ High_Temp_Rounded, 
+                 data = nyc_rate_data, 
+                 family = gaussian(link = "log"))
+
+# Create 200 point sequence for trend line
+model_seq <- data.frame(
+  High_Temp_Rounded = seq(min(nyc_rate_data$High_Temp_Rounded), 
+                          max(nyc_rate_data$High_Temp_Rounded), 
+                          length.out = 200)
+)
+model_seq$Predicted_Incidents <- predict(fit_model, newdata = model_seq, type = "response")
+
+# Calculate R-Squared and P-Value for model
+r2 <- round(1 - (fit_model$deviance / fit_model$null.deviance), 4)
+model_summary <- summary(fit_model)
+p_value <- model_summary$coefficients["High_Temp_Rounded", 4]
+
+# 6) Plot
+ggplot(nyc_rate_data, aes(x = High_Temp_Rounded, y = Incidents_Per_Day)) +
+  geom_point(color = "blue", size = 2) +
+  geom_line(data = model_seq, aes(y = Predicted_Incidents), color = "red", linewidth = 1.2) +
+  scale_x_continuous(breaks = seq(0, 110, by = 10)) +
+  labs(
+    title = "NYC Shooting Risk: True Daily Averages",
+    x = "Daily High Temperature (°F) Rounded",
+    y = "Average Incidents Per Day"
+  ) +
+  theme_minimal()
+
+summary(fit_model)
+print(paste("R-Squared:", round(r2, 3)))
+print(paste("P-Value:", p_value))
+```
+
+The chart above displays the average number of incidents that occurred on days with each high temperature.  In order to get the rate, I added in temperatures for every day from the first date in the data set to the last, regardless of whether or not an incident occurred on that date.  This was an important step because if I only looked at the temperatures on days with an incident, the rate would be higher in most cases because days with zero incidents would not be included to bring the daily rate down.
+
+The reason I chose average incidents per day as opposed to the raw number of incidents for each temperature is because of temperatures at the extremes.  Extreme temperatures, whether hot or cold, are less frequent, so comparing the total number of incidents occurring on days with a high temperature of 100 degrees to days with a high temperature of 70 is misleading.  Since there are fewer days with highs of 100 degrees, that number is likely going to be lower just because of it's frequency.
+
+I chose to do a Generalized Linear Model with Log-Link because the data is not linear, the rates do not go up at a uniform amount based on the increase in temperature.  I also chose it because average incidents per day cannot be negative, which is something a linear model would eventually predict.  I chose to use the Gaussian family because given the size of my data set and the fact I am modeling an average, the Central Limit Theorem says it will follow a Normal distribution.
+
+Based on R-Squared and P-Value of the model, temperature does have a significant impact on the rate of shooting incidents in New York City.
+
+#### Analysis
+
+The when data shows two distinct trends, the frequency of shooting incidents increases at night and during the warmer months of the year. These trends raises further questions:
+
+- Why does the frequency increase at night?
+- Does the frequency increase at night because it is harder to see and there are fewer people out?
+- If the number of potential witnesses is a factor, why does the frequency increase during the summer when more people are out?
+- Which is the more influential factor, time of day or time of year, and by extension, temperature?
+
+Again, there are many more questions that arise from these results but these are the ones I would prioritize looking to pursue next.
+
+
+## <b>Conclusion</b>
+
+Based on the analysis performed above, there does appear to be a relationship between location and the percentage of shooting incidents that occur.  The 10 precincts accounting for nearly 40% of the total shooting incidents across the 77 precincts in New York City proves they hold a disproportionate share.  The proximity of the "Top 10" to each other shows that there are areas in New York City where shooting incidents occur more frequently.
+
+There also appears to be a relationship between both the time of day and time of year.  A disproportionate number of shooting incidents occurs during the night hours and warmer months of the year, with the hours of 6 PM to 4 AM accounting for over 72% of all incidents, and the months between May and October accounting for over 60%.
+
+These trends should provide insight that would allow the NYPD to better focus their efforts to reduce shooting incidents by identifying where and when additional efforts would be beneficial.
+
+### Bias
+
+In terms of the data itself the only bias I can think of is whether or not it includes all shooting incidents in New York City, that none were missed.  I also rounded the temperature data that I used to the nearest full degree which could have an impact.
+
+I think a clear point of bias for me while doing this analysis is the fact I am currently looking to move, and safety is a key part of that evaluative process.  Everyone strives to live somewhere they feel safe, and looking at statistics such as these is one way people look to make an informed decision.  I also live in the Washington, DC area where areas some areas have a higher rate of shooting incidents than others, so I'm naturally curious if that occurs in other cities too.
+
+I also have friends that either lived or currently live in New York City, which could create a bias or greater interest in certain areas of the city.  I believe any potential bias was mitigated by my approach to the data analysis: I used the city's data as it was provided with no adjustments or alternations to the data itself.
+
+```{r sessionInfo, echo = TRUE, message=FALSE}
+sessionInfo()
+```
