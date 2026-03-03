@@ -1,0 +1,321 @@
+---
+title: "DTSA5301_COVID19_Data_Analysis"
+author: "Joe Schoen"
+date: "2026-02-17"
+output: html_document
+---
+
+```{r setup, echo=TRUE, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(tigris)
+library(sf)
+library(dplyr)
+```
+
+## John's Hopkins COVID-19 Data Project
+
+This R Markdown is a combination of code from the guided class lectures in DTSA 5301 and my own analysis.  Below you will find the initial analysis we were directed to do in class followed by the additional analysis I chose to do for the purposes of this final assignment.
+
+### Classwork
+
+Below is all of the work we were directed to do in the lectures, so all of this is likely going to look familiar.  I will have a header following the coursework to mark where my own supplemental analysis begins.
+
+```{r import, echo = TRUE}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/"
+
+file_names <- c("time_series_covid19_confirmed_global.csv",  "time_series_covid19_deaths_global.csv", "time_series_covid19_confirmed_US.csv",  "time_series_covid19_deaths_US.csv")
+
+urls <- str_c(url_in, file_names)
+
+global_cases <- read_csv(urls[1])
+global_deaths <- read_csv(urls[2])
+US_cases <- read_csv(urls[3])
+US_deaths <- read_csv(urls[4])
+```
+
+```{r tidy_global_data, echo = TRUE}
+global_cases <- global_cases %>% 
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "cases") %>% 
+  select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>% 
+  pivot_longer(cols = -c('Province/State', 'Country/Region', Lat, Long),
+               names_to = "date",
+               values_to = "deaths") %>% 
+  select(-c(Lat,Long))
+
+global <- global_cases %>% 
+  full_join(global_deaths) %>% 
+  rename(Country_Region = 'Country/Region',
+         Province_State = 'Province/State') %>% 
+  mutate(date = mdy(date))
+
+summary(global)
+
+global <- global %>% filter(cases > 0)
+
+summary(global)
+
+global %>% filter(cases > 28000000)
+
+US_cases <- US_cases %>% 
+  pivot_longer(cols = -(UID:Combined_Key),
+               names_to = "date",
+               values_to = "cases") %>% 
+  select(Admin2:cases) %>% 
+  mutate(date = mdy(date)) %>% 
+  select(-c(Lat, Long_))
+
+US_cases
+
+US_deaths <- US_deaths %>% 
+  pivot_longer(cols = -(UID:Population),
+               names_to = "date",
+               values_to = "deaths") %>% 
+  select(Admin2:deaths) %>% 
+  mutate(date = mdy(date)) %>% 
+  select(-c(Lat, Long_))
+
+US_deaths
+
+US <- US_cases %>% 
+  full_join(US_deaths)
+
+US
+
+global <- global %>% 
+  unite("Combined_Key",
+        c(Province_State, Country_Region),
+        sep = ", ",
+        na.rm = TRUE,
+        remove = FALSE)
+
+global
+
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+
+uid <- read_csv(uid_lookup_url) %>% 
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+
+global <- global %>% 
+  left_join(uid, by = c("Province_State", "Country_Region")) %>% 
+  select(-c(UID, FIPS)) %>% 
+  select(Province_State, Country_Region, date, cases, deaths, Population, Combined_Key)
+global
+```
+
+```{r visualizing, echo = TRUE}
+US_by_state <- US %>% 
+  group_by(Province_State, Country_Region, date) %>% 
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>% 
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>% 
+  select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>% 
+  ungroup()
+
+US_totals <- US_by_state %>% 
+  group_by(Country_Region, date) %>% 
+  summarize(cases = sum(cases), deaths = sum(deaths),
+            Population = sum(Population)) %>% 
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>%
+  select(Country_Region, date, cases, deaths, deaths_per_mill, Population) %>% 
+  ungroup()
+
+US_totals
+
+tail(US_totals)
+
+US_totals %>% 
+  filter(cases > 0) %>% 
+  ggplot(aes(x = date, y = cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+
+state <- "New York"
+US_by_state %>% 
+  filter(Province_State == state) %>% 
+  filter(cases > 0) %>% 
+  ggplot(aes(x = date, y =cases)) +
+  geom_line(aes(color = "cases")) +
+  geom_point(aes(color = "cases")) +
+  geom_line(aes(y = deaths, color = "deaths")) +
+  geom_point(aes(y = deaths, colors = "deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+
+max(US_totals$date)
+max(US_totals$deaths)
+```
+
+```{r analyzing_lecture, echo = TRUE}
+US_by_state <- US_by_state %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+US_totals <- US_totals %>% 
+  mutate(new_cases = cases - lag(cases),
+         new_deaths = deaths - lag(deaths))
+
+tail(US_totals %>% select(new_cases, new_deaths, everything()))
+
+US_totals %>% 
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, color = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position="bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = "COVID19 in US", y = NULL)
+
+state <- "New York"
+US_by_state %>% 
+  filter(Province_State == state) %>% 
+  filter(cases > 0) %>% 
+  ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) +
+  geom_point(aes(color = "new_cases")) +
+  geom_line(aes(y = new_deaths, color = "new_deaths")) +
+  geom_point(aes(y = new_deaths, colors = "new_deaths")) +
+  scale_y_log10() +
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("COVID19 in ", state), y = NULL)
+
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>% 
+  summarize(deaths = max (deaths), cases = max(cases),
+            population = max(Population),
+            cases_per_thou = 1000 * cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>% 
+  filter(cases > 0, population > 0)
+
+US_state_totals %>% 
+  slice_min(deaths_per_thou, n = 10)
+
+US_state_totals %>% 
+  slice_min(deaths_per_thou, n = 10) %>% 
+  select(deaths_per_thou, cases_per_thou, everything())
+
+US_state_totals %>% 
+  slice_max(deaths_per_thou, n = 10) %>% 
+  select(deaths_per_thou, cases_per_thou, everything())
+```
+
+```{r modeling_lecture, echo = TRUE}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+
+US_state_totals %>% slice_min(cases_per_thou)
+
+US_state_totals %>% slice_max(cases_per_thou)
+
+US_state_totals %>% mutate(pred = predict(mod))
+
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred
+
+US_tot_w_pred %>% ggplot() +
+  geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") +
+  geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+
+## Beyond the Lectures - Supplemental Analysis
+### Cases_per_thou/deaths_per_thou and State Population
+
+After working through the lectures and following along, the question I became focused on was how population affects cases and deaths.  In the lectures we looked at the relationship between cases and deaths, but biggest driver of both would be how easily the disease was spread.  Given that, there is likely a connection between both higher cases_per_thou and deaths_per_thou with state population.
+
+Since state populations can vary greatly, with California having 39,512,223 residents compared to Wyoming's 578,759, I will be applying a log10 scale to the population data to level the playing field so that states are compared fairly.  This allows us to look at the impact of the percentage change in population on cases_per_thou and deaths_per_thou.
+
+```{r supplemental, echo=TRUE}
+
+# Graph cases/log10 population
+ggplot(US_state_totals, aes(x = population, y = cases_per_thou)) +
+  geom_point(alpha = 0.7, color = "blue") +
+  scale_x_log10(labels = scales::comma) + 
+  labs(
+    title = "Cases Per Thousand by State Population",
+    subtitle = "Analyzing maximum cases per thousand residents across states of varying sizes (Log Scale)",
+    x = "Total State Population (Log Scale)",
+    y = "Max Cases per Thousand"
+  ) +
+  theme_minimal()
+
+# Graph deaths/log10 population
+ggplot(US_state_totals, aes(x = population, y = deaths_per_thou)) +
+  geom_point(alpha = 0.7, color = "red") +
+  scale_x_log10(labels = scales::comma) + 
+  labs(
+    title = "Deaths Per Thousand by State Population",
+    subtitle = "Analyzing maximum deaths per thousand residents across states of varying sizes (Log Scale)",
+    x = "Total State Population (Log Scale)",
+    y = "Max Deaths per Thousand"
+  ) +
+  theme_minimal()
+
+# Create cases/log10 population model
+pop_mod_cases <- lm(cases_per_thou ~ log10(population), data = US_state_totals)
+summary(pop_mod_cases)
+
+#Create deaths/log10 population model
+pop_mod_deaths <- lm(deaths_per_thou ~ log10(population), data = US_state_totals)
+summary(pop_mod_deaths)
+```
+
+As seen in both the graphs above, there does appear to be a relationship between population and both cases_per_thou and deaths_per_thou, but the model summaries show only one is significant. The model of cases_per_thou to population has a P-Value of 0.0937, which is above 0.05, and an R Squared of 0.051 meaning it only explains about 5% of the variance in case rates.  The death_per_thou to population model is much better, with a P-Value of 2.578e-05 it is way below the 0.05 threshold, and an R Squared of 0.2817, meaning population scale explains about 28% of the variation in death rates.
+
+These results go along with a major problem during the surges in the pandemic.  At times, especially very early on, the volume of patients exceeded the capacity of our medical centers.  That could mean more populated states were more likely to experience this problem, leading to higher death per case rates as they were unable to treat everyone, which could mean there is a connection between population and deaths per case in each state.
+
+### Death Per Case Ratio and Population
+
+```{r death_case_ratio, echo = TRUE} 
+# Add the Death-to-Case Ratio
+US_state_totals <- US_state_totals %>%
+  mutate(death_per_case_ratio = deaths / cases)
+
+# Create Death_Per_Case_Ratio Model
+pop_dcratio_mod <- lm(death_per_case_ratio ~ log10(population), data = US_state_totals)
+summary(pop_dcratio_mod)
+
+# Add model to data set
+US_tot_w_poppred <- US_state_totals %>% mutate(pred = predict(pop_dcratio_mod))
+
+# Create graph with model plotted
+US_tot_w_poppred %>% ggplot() +
+  geom_point(aes(x = population, y = death_per_case_ratio), color = "purple") +
+  geom_point(aes(x = population, y = pred), color = "red") +
+  scale_x_log10(labels = scales::comma) +
+  labs(
+    title = "Death-to-Case Ratio by State Population",
+    subtitle = "Ratio of Total Deaths to Total Cases vs State Population",
+    x = "Total State Population (Log Scale)",
+    y = "Death per Case Ratio"
+  ) +
+  theme_minimal()
+
+```
+
+As seen in the model summary and graph above, the relationship between deaths per case and population is even more significant.  With a P-Value of 4.567e-06 and an R Squared of 0.3247, this is the strongest model yet.
+
+### Potential Bias
+
+In terms of the supplemental data analysis I've done, one source of bias could be that I grew up just outside of Washington, DC and was in that area during the majority of the pandemic, so I experienced the impact being in a larger population could have, especially in such a densely populated area.
+
+With regards to the actual analysis, state population can also be the smoke as opposed to the fire, by that I mean that while population clearly has an impact, the relationship may be better explained by what I just mentioned: population density.
+
+```{r sessionInfo, echo = TRUE}
+sessionInfo()
+```
